@@ -1,7 +1,7 @@
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from typing import List, Dict, Optional
-from modelos import Base, Usuario, SolicitudLote, Imagen, Transformacion, Nodo, LogEjecucion, EstadoLote, EstadoImagen
+from modelos import Base, Usuario, SolicitudLote, Imagen, Transformacion, Nodo, LogEjecucion, EstadoLote, EstadoImagen, EstadoNodo
 
 class IGestorBD:
     def guardar(self, entidad): pass
@@ -31,7 +31,7 @@ class GestorBD(IGestorBD):
             pool_recycle=3600,
             connect_args=connect_args if connect_args else None
         )
-        self.Session = sessionmaker(bind=self.engine)
+        self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
     
     def crear_tablas(self):
         """Crea todas las tablas en la base de datos"""
@@ -73,7 +73,12 @@ class GestorBD(IGestorBD):
     def actualizar(self, modelo, id: int, datos: Dict):
         session = self.Session()
         try:
-            entidad = session.query(modelo).get(id)
+            # Usar filter_by en lugar de session.get para evitar problemas de caché con MySQL
+            pk_col = modelo.__mapper__.primary_key[0].name
+            entidad = session.query(modelo).filter(
+                modelo.__mapper__.primary_key[0] == id
+            ).first()
+            print(f"[DEBUG actualizar] modelo={modelo.__tablename__} id={id} encontrado={entidad is not None}")
             if entidad:
                 for key, value in datos.items():
                     if hasattr(entidad, key):
@@ -87,11 +92,11 @@ class GestorBD(IGestorBD):
             raise e
         finally:
             session.close()
-    
+
     def eliminar(self, modelo, id: int):
         session = self.Session()
         try:
-            entidad = session.query(modelo).get(id)
+            entidad = session.get(modelo, id)   # ← cambiar esta línea
             if entidad:
                 session.delete(entidad)
                 session.commit()
@@ -132,7 +137,7 @@ class GestorBD(IGestorBD):
         return self.actualizar(Nodo, id, {"estado": estado})
     
     def obtener_nodos_activos(self):
-        return self.obtener(Nodo, {"estado": "activo"})
+        return self.obtener(Nodo, {"estado": EstadoNodo.ACTIVO})
     
     def guardar_log(self, log):
         return self.guardar(log)
@@ -154,4 +159,38 @@ class GestorBD(IGestorBD):
             return True
         except Exception as e:
             print(f"Error de conexión: {e}")
-            return False
+            return False    
+    def incrementar_completadas_atomico(self, id_lote: int) -> object:
+        """
+        Incrementa imagenes_completadas en 1 de forma atómica usando SQL directo,
+        evitando condiciones de carrera cuando múltiples nodos terminan a la vez.
+        Retorna el lote actualizado.
+        """
+        session = self.Session()
+        try:
+            session.execute(
+                text(
+                    "UPDATE solicitudes_lote "
+                    "SET imagenes_completadas = imagenes_completadas + 1 "
+                    "WHERE id_lote = :id"
+                ),
+                {"id": id_lote}
+            )
+            session.commit()
+            # Releer el lote para ver el valor real tras el commit
+            lote = session.query(SolicitudLote).filter(
+                SolicitudLote.id_lote == id_lote
+            ).first()
+            if lote and lote.total_imagenes > 0:
+                if lote.imagenes_completadas >= lote.total_imagenes:
+                    lote.estado = EstadoLote.COMPLETADO
+                elif lote.estado == EstadoLote.PENDIENTE:
+                    lote.estado = EstadoLote.EN_PROCESO
+                session.commit()
+                session.refresh(lote)
+            return lote
+        except Exception as e:
+            session.rollback()
+            raise e
+        finally:
+            session.close()

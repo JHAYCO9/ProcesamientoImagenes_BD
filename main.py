@@ -1,10 +1,7 @@
-# main.py
-#!/usr/bin/env python3
 import sys
 import signal
 import os
 
-# Agregar el directorio actual al path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import Config

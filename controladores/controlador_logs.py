@@ -6,11 +6,12 @@ class ControladorLogs:
         self.gestor_bd = gestor_bd
     
     def guardar_log(self, datos: dict) -> dict:
+        nivel_str = datos.get('nivel', 'INFO').upper()  # ← forzar mayúsculas
         log = LogEjecucion(
             id_imagen=datos.get('id_imagen'),
             id_nodo=datos.get('id_nodo'),
             mensaje=datos.get('mensaje'),
-            nivel=NivelLog(datos.get('nivel', 'info'))
+            nivel=NivelLog(nivel_str)
         )
         log = self.gestor_bd.guardar_log(log)
         return {"id_log": log.id_log, "timestamp": log.timestamp.isoformat()}
